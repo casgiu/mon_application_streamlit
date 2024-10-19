@@ -47,3 +47,11 @@ def process_fit_files(folder_path, extracted_folder):
         # Vérifier si le fichier .csv existe déjà
         if not os.path.exists(csvfile_path):
             extract_and_save_fit_data(fitfile_path, csvfile_path)  # Extraire et sauvegarder si le fichier n'existe pas
+
+def check_data_empty(df):
+    """
+    Vérifie si le DataFrame est vide.
+    :param df: DataFrame à vérifier
+    :return: True si le DataFrame est vide, sinon False
+    """
+    return df.empty

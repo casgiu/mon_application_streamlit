@@ -24,9 +24,19 @@ def filter_by_date(df, start_date, end_date):
 
 # Fonction pour calculer le temps passé dans chaque zone de fréquence cardiaque
 def calculate_heart_rate_zones(df):
-    df.loc[:, 'zone'] = df['heart_rate'].apply(determine_zone)
-    time_in_zones = df.groupby('zone').agg({'time_diff': 'sum'}).fillna(0)
-    return time_in_zones
+    if 'heart_rate' not in df or 'timestamp' not in df:
+        return {}  # Retourne un dictionnaire vide si les colonnes sont manquantes
+
+    # Ajouter une colonne 'zone' pour chaque enregistrement de fréquence cardiaque
+    df['zone'] = df['heart_rate'].apply(determine_zone)
+
+    # Calculer la durée de chaque enregistrement en secondes
+    df['time_diff'] = df['timestamp'].diff().dt.total_seconds().fillna(0)
+
+    # Calculer le temps dans chaque zone
+    time_in_zones = df.groupby('zone')['time_diff'].sum() / 60  # Conversion en minutes
+
+    return time_in_zones.to_dict()  # Retourner sous forme de dictionnaire
 
 # Fonction pour calculer la distance totale par semaine
 def calculate_weekly_distance(activities):
@@ -113,17 +123,30 @@ average_pace_min_per_km = (total_time / total_distance) if total_distance > 0 el
 # Affichage des résultats dans l'onglet "Fréquence Cardiaque"
 with tab1:
     st.write("Pourcentage du temps passé dans chaque zone de fréquence cardiaque :")
-    time_in_zones = pd.DataFrame()
-    
-    for hr_df in heart_rate_data:
-        time_in_zones = time_in_zones.add(calculate_heart_rate_zones(hr_df), fill_value=0)
+    time_in_zones_totals = {}  # Dictionnaire pour stocker les temps totaux par zone
 
-    fig, ax = plt.subplots()
-    time_in_zones.plot(kind='bar', ax=ax)
-    ax.set_title('Temps passé dans chaque zone de fréquence cardiaque')
-    ax.set_ylabel('Temps (minutes)')
-    ax.set_xlabel('Zones de Fréquence Cardiaque')
-    st.pyplot(fig)
+    for hr_df in heart_rate_data:
+        time_in_zones = calculate_heart_rate_zones(hr_df)
+        
+        # Additionner les temps dans les zones
+        for zone, time in time_in_zones.items():
+            if zone in time_in_zones_totals:
+                time_in_zones_totals[zone] += time
+            else:
+                time_in_zones_totals[zone] = time
+
+    # Créer un DataFrame à partir du dictionnaire
+    time_in_zones_df = pd.Series(time_in_zones_totals)
+
+    if not time_in_zones_df.empty:
+        fig, ax = plt.subplots()
+        time_in_zones_df.plot(kind='bar', ax=ax)
+        ax.set_title('Temps passé dans chaque zone de fréquence cardiaque')
+        ax.set_ylabel('Temps (minutes)')
+        ax.set_xlabel('Zones de Fréquence Cardiaque')
+        st.pyplot(fig)
+    else:
+        st.write("Aucune donnée disponible pour les zones de fréquence cardiaque.")
 
 # Affichage des résultats dans l'onglet "Allure"
 with tab2:
@@ -157,4 +180,3 @@ with tab4:
         st.pyplot(fig)
     else:
         st.write("Aucune activité trouvée pour la période sélectionnée.")
-
