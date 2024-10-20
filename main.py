@@ -1,78 +1,69 @@
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 import matplotlib.pyplot as plt
 import os
 from config import folder_path, extracted_folder, cleanup_folder
 from heart_rate_zones import determine_zone
-from data_extraction import process_fit_files  # Importation de la fonction d'extraction
+from fonctions import (calculate_active_time, calculate_total_distance, 
+                       filter_by_date, calculate_heart_rate_zones, 
+                       calculate_weekly_distance, calculate_time_above_90_percent_vma, format_duration)
+from data_extraction import process_fit_files
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
 
-# Fonction pour calculer le temps actif
-def calculate_active_time(df):
-    df.loc[:, 'time_diff'] = df['timestamp'].diff().dt.total_seconds().fillna(0)
-    df.loc[:, 'time_diff'] = df['time_diff'].apply(lambda x: x if x <= 300 else 0)
-    total_active_time = df['time_diff'].sum()
-    return total_active_time / 60  # Retourner en minutes
-
-# Fonction pour calculer la distance totale
-def calculate_total_distance(df):
-    return df['distance'].iloc[-1] / 1000  # Conversion en km
-
-# Fonction pour filtrer les fichiers en fonction des dates
-def filter_by_date(df, start_date, end_date):
-    mask = (df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)
-    return df[mask].copy()  # Créer une copie explicite
-
-# Fonction pour calculer le temps passé dans chaque zone de fréquence cardiaque
-def calculate_heart_rate_zones(df):
-    if 'heart_rate' not in df or 'timestamp' not in df:
-        return {}  # Retourne un dictionnaire vide si les colonnes sont manquantes
-
-    # Ajouter une colonne 'zone' pour chaque enregistrement de fréquence cardiaque
-    df['zone'] = df['heart_rate'].apply(determine_zone)
-
-    # Calculer la durée de chaque enregistrement en secondes
-    df['time_diff'] = df['timestamp'].diff().dt.total_seconds().fillna(0)
-
-    # Calculer le temps dans chaque zone
-    time_in_zones = df.groupby('zone')['time_diff'].sum() / 60  # Conversion en minutes
-
-    return time_in_zones.to_dict()  # Retourner sous forme de dictionnaire
-
-# Fonction pour calculer la distance totale par semaine
-def calculate_weekly_distance(activities):
-    # Convertir la liste d'activités en DataFrame
-    activities_df = pd.DataFrame(activities)
-    activities_df['date'] = pd.to_datetime(activities_df['date'])
-    
-    # Extraire la semaine et l'année
-    activities_df['week'] = activities_df['date'].dt.isocalendar().week
-    activities_df['year'] = activities_df['date'].dt.year
-    
-    # Calculer la distance totale par semaine
-    weekly_distance = activities_df.groupby(['year', 'week'])['distance (km)'].sum().reset_index()
-    return weekly_distance
 
 # Interface Streamlit
 st.title("Analyse des Séances de Course à Pied")
 
+# Obtenir la date d'aujourd'hui
+today = datetime.today()
+
+# Initialiser le session state pour les dates si nécessaire
+if 'start_date' not in st.session_state:
+    st.session_state.start_date = today - timedelta(days=7)  # 7 jours avant aujourd'hui
+if 'end_date' not in st.session_state:
+    st.session_state.end_date = today  # Date d'aujourd'hui
+
+# Créer des colonnes pour la sélection de dates et les boutons
+col1, col2 = st.columns(2)
+
+# Colonne 1: Sélection de la plage de dates
+with col1:
+    st.header("Sélectionnez une plage de dates")
+    st.session_state.end_date = st.date_input("Date de fin", st.session_state.end_date, key="end_date_input")
+    st.session_state.start_date = st.date_input("Date de début", st.session_state.start_date, key="start_date_input")
+
+# Colonne 2: Boutons pour sélectionner la période
+with col2:
+    st.header("Sélectionnez une période")
+    
+    # Choisir la semaine en cours
+    if st.button("Semaine en cours"):
+        start_of_week = today - timedelta(days=today.weekday())  # Lundi de la semaine en cours
+        end_of_week = start_of_week + timedelta(days=6)  # Dimanche de la semaine en cours
+        st.session_state.start_date = start_of_week
+        st.session_state.end_date = end_of_week
+
+    # Choisir le mois en cours
+    if st.button("Mois en cours"):
+        st.session_state.start_date = today.replace(day=1)  # 1er jour du mois
+        st.session_state.end_date = today  # Date d'aujourd'hui
+
+    # Choisir "Depuis le début"
+    if st.button("Depuis le début"):
+        first_activity_date = pd.to_datetime("2024-01-01")  # Exemple de date (remplacez par votre logique)
+        st.session_state.start_date = first_activity_date
+        st.session_state.end_date = today
+
 # Onglets pour les différentes sections
 tab1, tab2, tab3, tab4 = st.tabs(["Fréquence Cardiaque", "Allure", "Activités", "Évolution de la Distance"])
 
-# Sélection de la plage de dates avec des clés uniques
-start_date = st.date_input("Sélectionnez la date de début", pd.to_datetime("2024-10-01"), key="start_date_input")
-end_date = st.date_input("Sélectionnez la date de fin", pd.to_datetime("2024-10-15"), key="end_date_input")
-
 # Liste pour stocker les informations sur les activités
 activities = []
-
-# Initialiser les variables pour stocker les distances et temps
 total_distance = 0
 total_time = 0
-
-# Ensemble pour éviter les doublons
 activity_dates_set = set()
-
-# Variables pour stocker les données de fréquence cardiaque
 heart_rate_data = []
 
 # Vérification des fichiers .zip et extraction
@@ -88,22 +79,24 @@ for csv_file in csv_files:
     df = pd.read_csv(csvfile_path)
 
     # Convertir la colonne timestamp en datetime
-    df.loc[:, 'timestamp'] = pd.to_datetime(df['timestamp'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
 
     # Filtrer les données par la plage de dates
-    df_filtered = filter_by_date(df, pd.to_datetime(start_date), pd.to_datetime(end_date))
+    df_filtered = filter_by_date(df, st.session_state.start_date, st.session_state.end_date)
 
     if not df_filtered.empty:
         activity_date = df_filtered['timestamp'].iloc[0].date()
 
         distance = calculate_total_distance(df_filtered)
         active_time = calculate_active_time(df_filtered)
+        time_above_vma = calculate_time_above_90_percent_vma(df_filtered)
 
         if activity_date not in activity_dates_set:
             activities.append({
                 'date': activity_date,
                 'duration (minutes)': active_time,
-                'distance (km)': distance
+                'distance (km)': distance,
+                'Temps >= 90% VMA (minutes)': time_above_vma
             })
             activity_dates_set.add(activity_date)
 
@@ -111,72 +104,101 @@ for csv_file in csv_files:
             total_time += active_time
 
             hr_df = df_filtered[['timestamp', 'heart_rate']].copy()
-            hr_df.loc[:, 'time_diff'] = hr_df['timestamp'].diff().dt.total_seconds().fillna(0) / 60  # Utiliser .loc ici
+            hr_df['time_diff'] = hr_df['timestamp'].diff().dt.total_seconds().fillna(0) / 60
             heart_rate_data.append(hr_df)
 
 # Nettoyage du dossier après traitement
 cleanup_folder(extracted_folder)
 
 # Calcul de l'allure moyenne
-average_pace_min_per_km = (total_time / total_distance) if total_distance > 0 else 0  # en minutes par km
+average_pace_min_per_km = (total_time / total_distance) if total_distance > 0 else 0
 
 # Affichage des résultats dans l'onglet "Fréquence Cardiaque"
 with tab1:
     st.write("Pourcentage du temps passé dans chaque zone de fréquence cardiaque :")
-    time_in_zones_totals = {}  # Dictionnaire pour stocker les temps totaux par zone
+    time_in_zones_totals = {}
 
+    # Calculer le temps passé dans chaque zone de fréquence cardiaque
     for hr_df in heart_rate_data:
-        time_in_zones = calculate_heart_rate_zones(hr_df)
+        time_in_zones = calculate_heart_rate_zones(hr_df, determine_zone)
         
-        # Additionner les temps dans les zones
         for zone, time in time_in_zones.items():
             if zone in time_in_zones_totals:
                 time_in_zones_totals[zone] += time
             else:
                 time_in_zones_totals[zone] = time
 
-    # Créer un DataFrame à partir du dictionnaire
     time_in_zones_df = pd.Series(time_in_zones_totals)
 
     if not time_in_zones_df.empty:
-        fig, ax = plt.subplots()
-        time_in_zones_df.plot(kind='bar', ax=ax)
-        ax.set_title('Temps passé dans chaque zone de fréquence cardiaque')
-        ax.set_ylabel('Temps (minutes)')
-        ax.set_xlabel('Zones de Fréquence Cardiaque')
-        st.pyplot(fig)
+        # Appliquer la conversion min:sec aux durées
+        formatted_durations = time_in_zones_df.apply(format_duration)
+
+        # Créer le graphique Plotly
+        fig = px.bar(
+            time_in_zones_df,
+            x=time_in_zones_df.index,
+            y=time_in_zones_df.values,
+            labels={'x': 'Zones de Fréquence Cardiaque', 'y': 'Temps (minutes)'},
+            title='Temps passé dans chaque zone de fréquence cardiaque',
+        )
+
+        # Personnaliser les infos affichées au survol
+        fig.update_traces(hovertemplate='Zone %{x}<br>Durée: %{customdata}<extra></extra>',
+                          customdata=formatted_durations)
+
+        # Afficher le graphique dans Streamlit
+        st.plotly_chart(fig)
     else:
         st.write("Aucune donnée disponible pour les zones de fréquence cardiaque.")
 
 # Affichage des résultats dans l'onglet "Allure"
 with tab2:
     st.write(f"Distance totale : {total_distance:.2f} km")
-    st.write(f"Allure moyenne : {average_pace_min_per_km:.2f} min/km" if average_pace_min_per_km > 0 else "Allure non calculable.")
+    formatted_pace = format_duration(average_pace_min_per_km) if average_pace_min_per_km > 0 else "Non calculable"
+    st.write(f"Allure moyenne : {formatted_pace} min/km")
 
 # Affichage des détails de chaque activité dans l'onglet "Activités"
 with tab3:
     if activities:
         activities_df = pd.DataFrame(activities)
-        activities_df['date'] = pd.to_datetime(activities_df['date'])
-        activities_df['date'] = activities_df['date'].dt.strftime('%Y-%m-%d')  # Format de la date
+        activities_df['date'] = pd.to_datetime(activities_df['date']).dt.strftime('%Y-%m-%d')
+        activities_df['duration (minutes)'] = activities_df['duration (minutes)'].apply(format_duration)
+        activities_df['Temps >= 90% VMA (minutes)'] = activities_df['Temps >= 90% VMA (minutes)'].apply(format_duration)
         st.write("### Détails des Activités")
         st.write(activities_df)
     else:
         st.write("Aucune activité trouvée pour la période sélectionnée.")
 
-# Affichage de l'évolution de la distance dans l'onglet "Évolution de la Distance"
+# Graphique de l'évolution de la distance
 with tab4:
     if activities:
         weekly_distance = calculate_weekly_distance(activities)
-        
-        # Création du graphique
-        fig, ax = plt.subplots()
-        ax.plot(weekly_distance['week'].astype(str) + '-' + weekly_distance['year'].astype(str), weekly_distance['distance (km)'], marker='o')
-        ax.set_title('Évolution de la Distance Totale par Semaine')
-        ax.set_xlabel('Semaine - Année')
-        ax.set_ylabel('Distance Totale (km)')
-        ax.set_xticks(range(len(weekly_distance)))
-        ax.set_xticklabels(weekly_distance['week'].astype(str) + '-' + weekly_distance['year'].astype(str), rotation=45)
-        st.pyplot(fig)
+
+        # Créer le graphique Plotly
+        fig = go.Figure()
+
+        # Ajouter une trace pour la distance hebdomadaire
+        fig.add_trace(go.Scatter(
+            x=weekly_distance['week'].astype(str) + '-' + weekly_distance['year'].astype(str),
+            y=weekly_distance['distance (km)'],
+            mode='lines+markers',
+            marker=dict(size=8, color='blue'),
+            line=dict(color='blue'),
+            hovertemplate='Semaine %{x}<br>Distance: %{y} km<extra></extra>'
+        ))
+
+        # Définir les titres et les labels
+        fig.update_layout(
+            title='Évolution de la Distance Totale par Semaine',
+            xaxis_title='Semaine - Année',
+            yaxis_title='Distance Totale (km)',
+            xaxis_tickangle=-45,
+            template='plotly_white',
+            hovermode='x'
+        )
+
+        # Afficher le graphique interactif dans Streamlit
+        st.plotly_chart(fig)
     else:
         st.write("Aucune activité trouvée pour la période sélectionnée.")
